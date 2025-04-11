@@ -81,6 +81,7 @@ module cva6
     // IF/ID Stage
     // store the decompressed instruction
     localparam type fetch_entry_t = struct packed {
+      logic [$clog2(CVA6Cfg.NUM_THREADS)-1:0] thread_id;
       logic [CVA6Cfg.VLEN-1:0] address;  // the address of the instructions from below
       logic [31:0] instruction;  // instruction word
       branchpredict_sbe_t     branch_predict; // this field contains branch prediction information regarding the forward branch path
@@ -1303,7 +1304,7 @@ module cva6
   dcache_req_o_t [NumPorts-1:0] dcache_req_from_cache;
 
   // D$ request
-  // Since ZCMT is only enable for embdeed class so MMU should be disable. 
+  // Since ZCMT is only enable for embdeed class so MMU should be disable.
   // Cache port 0 is being ultilize in implicit read access in ZCMT extension.
   if (CVA6Cfg.RVZCMT & ~(CVA6Cfg.MmuPresent)) begin
     assign dcache_req_to_cache[0] = dcache_req_ports_id_cache;

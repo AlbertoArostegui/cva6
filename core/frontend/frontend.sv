@@ -305,6 +305,8 @@ module frontend
   end
   assign is_mispredict = resolved_branch_i.valid & resolved_branch_i.is_mispredict;
 
+
+
   // Cache interface
   assign icache_dreq_o.req = instr_queue_ready;
   assign if_ready = icache_dreq_i.ready & instr_queue_ready;
@@ -336,6 +338,35 @@ module frontend
                                 & (resolved_branch_i.cf_type == ariane_pkg::JumpR);
   assign btb_update.pc = resolved_branch_i.pc;
   assign btb_update.target_address = resolved_branch_i.target_address;
+
+  // thread scheduling
+  logic [CVA6Cfg.VLEN-1:0] thread_pc;
+  logic [$clog(CVA6Cfg.NUM_THREADS)-1:0] current_thread_id_d, current_thread_id_q;
+  logic [CVA6Cfg.NUM_THREADS-1:0] thread_ready;
+
+  thread_context #(
+    .CVA6Cfg(CVA6Cfg),
+    .NUM_THREADS(CVA6Cfg.NUM_THREADS)
+  ) i_thread_context (
+    .clk_i,
+    .rst_ni,
+    .pc_read_thread_id_i(current_thread_id_q),
+    .pc_read_value_o(thread_pc),
+    .pc_write_thread_id_i(current_thread_id_q),
+    .pc_write_i(update_pc),
+    .pc_write_value_i(next_pc),
+    .boot_addr_i(boot_addr_i)
+  );
+
+  always_comb begin : thread_schedule
+    current_thread_id_d = current_thread_id_q;
+
+    if (instr_queue_ready && !halt_i) begin
+      int next_thread = (current_thread_id_q + i) % CVA6Cfg.NUM_THREADS;
+    end
+  end
+
+  assign fetch_entry_o.thread_id = current_thread_q;
 
   // -------------------
   // Next PC
@@ -408,7 +439,8 @@ module frontend
     // enter debug on a hard-coded base-address
     if (CVA6Cfg.DebugEn && set_debug_pc_i)
       npc_d = CVA6Cfg.DmBaseAddress[CVA6Cfg.VLEN-1:0] + CVA6Cfg.HaltAddress[CVA6Cfg.VLEN-1:0];
-    icache_dreq_o.vaddr = fetch_address;
+    //icache_dreq_o.vaddr = fetch_address;
+    icache_dreq_o.vaddr = thread_pc;
   end
 
   logic [CVA6Cfg.FETCH_WIDTH-1:0] icache_data;
@@ -429,11 +461,13 @@ module frontend
       icache_ex_valid_q <= ariane_pkg::FE_NONE;
       btb_q             <= '0;
       bht_q             <= '0;
+      current_thread_id_q  <= '0;
     end else begin
       npc_rst_load_q <= 1'b0;
       npc_q          <= npc_d;
       speculative_q  <= speculative_d;
       icache_valid_q <= icache_dreq_i.valid;
+      current_thread_id_q <= current_thread_id_d;
       if (icache_dreq_i.valid) begin
         icache_data_q  <= icache_data;
         icache_vaddr_q <= icache_dreq_i.vaddr;

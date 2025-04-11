@@ -239,6 +239,7 @@ package config_pkg;
   typedef struct packed {
     int unsigned XLEN;
     int unsigned VLEN;
+    int unsigned NUM_THREADS;
     int unsigned PLEN;
     int unsigned GPLEN;
     bit IS_XLEN32;
