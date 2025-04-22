@@ -139,6 +139,7 @@ module cva6
       logic                    is_mispredict;   // set if this was a mis-predict
       logic                    is_taken;        // branch is taken
       cf_t                     cf_type;         // Type of control flow change
+      logic [$clog2(CVA6.Cfg.NUM_THREADS)-1:0] thread_id;
     },
 
     // All information needed to determine whether we need to associate an interrupt

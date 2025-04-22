@@ -63,7 +63,13 @@ module frontend
     // Handshake's valid between fetch and decode - ID_STAGE
     output logic [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_valid_o,
     // Handshake's ready between fetch and decode - ID_STAGE
-    input logic [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_ready_i
+    input logic [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_ready_i,
+
+    //Thread logic
+    input logic [$clog2(CVA6Cfg.NUM_THREADS)-1:0] eret_thread_id_i,
+    input logic [$clog2(CVA6Cfg.NUM_THREADS)-1:0] ex_thread_id_i,
+    input logic [$clog2(CVA6Cfg.NUM_THREADS)-1:0] pc_commit_thread_id_i,
+    input logic [$clog2(CVA6Cfg.NUM_THREADS)-1:0] debug_thread_id_i
 );
 
   localparam type bht_update_t = struct packed {
@@ -343,6 +349,11 @@ module frontend
   logic [CVA6Cfg.VLEN-1:0] thread_pc;
   logic [$clog(CVA6Cfg.NUM_THREADS)-1:0] current_thread_id_d, current_thread_id_q;
   logic [CVA6Cfg.NUM_THREADS-1:0] thread_ready;
+  thread_status_t [NUM_THREADS-1:0] all_threads_status;
+
+  logic pc_write_en_comb;
+  logic [CVA6Cfg.VLEN-1:0] pc_write_val_comb;
+  logic [$clog(CVA6Cfg.NUM_THREADS)-1:0] pc_thread_id_comb;
 
   thread_context #(
     .CVA6Cfg(CVA6Cfg),
@@ -352,21 +363,37 @@ module frontend
     .rst_ni,
     .pc_read_thread_id_i(current_thread_id_q),
     .pc_read_value_o(thread_pc),
-    .pc_write_thread_id_i(current_thread_id_q),
-    .pc_write_i(update_pc),
-    .pc_write_value_i(next_pc),
+
+    .pc_write_thread_id_i(pc_thread_id_comb),
+    .pc_write_i(pc_write_en_comb),
+    .pc_write_value_i(pc_write_val_comb),
+
+    .thread_status_update_i(),
+    .thread_status_update_id_i(),
+    .thread_status_value_i(),
+    .all_threads_status,
     .boot_addr_i(boot_addr_i)
   );
 
   always_comb begin : thread_schedule
     current_thread_id_d = current_thread_id_q;
+    logic found_ready = 1'b0;
+    logic [$clog2(NUM_THREADS):0] candidate_thread_id;
 
     if (instr_queue_ready && !halt_i) begin
-      int next_thread = (current_thread_id_q + i) % CVA6Cfg.NUM_THREADS;
+      for (int i = 1; i < NUM_THREADS; i++) begin
+        candidate_thread_id = (current_thread_id_q + i) % NUM_THREADS;
+
+        if (all_threads_status[candidate_thread_id] == ready) begin
+          current_thread_id_d = candidate_thread_id;
+          found_ready = 1'b1;
+          break;
+        end
+      end
     end
   end
 
-  assign fetch_entry_o.thread_id = current_thread_q;
+  assign fetch_entry_o.thread_id = current_thread_id_q;
 
   // -------------------
   // Next PC
@@ -380,68 +407,55 @@ module frontend
   // 5. Pipeline Flush because of CSR side effects
   // Mis-predict handling is a little bit different
   // select PC a.k.a PC Gen
-  always_comb begin : npc_select
-    automatic logic [CVA6Cfg.VLEN-1:0] fetch_address;
-    // check whether we come out of reset
-    // this is a workaround. some tools have issues
-    // having boot_addr_i in the asynchronous
-    // reset assignment to npc_q, even though
-    // boot_addr_i will be assigned a constant
-    // on the top-level.
-    if (npc_rst_load_q) begin
-      npc_d         = boot_addr_i;
-      fetch_address = boot_addr_i;
-    end else begin
-      fetch_address = npc_q;
-      // keep stable by default
-      npc_d         = npc_q;
-    end
-    // 0. Branch Prediction
+  //
+  // TODO: Next PC control logic (i. e. the signals that points out if there has been
+  // a branch, exception, ret and so on) must be associated with a thread id
+  always_comb begin : npc_multithreaded
+    // Default: no write
+    pc_write_en_comb = 1'b0;
+    pc_thread_id_comb = current_thread_id_q;
+    pc_write_val_comb = 0;
+
+    logic [CVA6Cfg.VLEN-1:0] current_thread_pc = thread_pc;
     if (bp_valid) begin
-      fetch_address = predict_address;
-      npc_d = predict_address;
-    end
-    // 1. Default assignment
-    if (if_ready) begin
-      npc_d = {
-        fetch_address[CVA6Cfg.VLEN-1:CVA6Cfg.FETCH_ALIGN_BITS] + 1, {CVA6Cfg.FETCH_ALIGN_BITS{1'b0}}
+      pc_write_en_comb = 1'b1;
+      pc_thread_id_comb = current_thread_id_q;
+      // TODO: BP logic should take into account the thread ID. BP needs to be partitioned, or, at
+      // least, address how are we going to to it.
+      pc_write_val_comb = predict_address;
+    end else if (if_ready) begin
+      pc_write_en_comb = 1'b1;
+      pc_write_val_comb = {
+        current_thread_pc[CVA6Cfg.VLEN-1:CVA6Cfg.FETCH_ALIGN_BITS] + 1, {CVA6Cfg.FETCH_ALIGN_BITS{1'b0}}
       };
+      pc_thread_id_comb = current_thread_id_q;
+    end else if (replay) begin
+      pc_write_en_comb = 1'b1;
+      pc_thread_id_comb = current_thread_id_q;
+      pc_write_val_comb = replay_addr;
+    end else if (resolved_branch_i.valid && resolved_branch_i.is_mispredict) begin
+      pc_write_en_comb = 1'b1;
+      pc_thread_id_comb = resolved_branch_i.thread_id;
+      pc_write_val_comb = resolved_branch_i.target_address;
+    end else if (eret_i) begin
+      pc_write_en_comb = 1'b1;
+      pc_thread_id_comb = eret_thread_id_i;
+      pc_write_val_comb = epc_i;
+    end else if (ex_valid_i) begin
+      pc_write_en_comb = 1'b1;
+      pc_thread_id_comb = ex_thread_id_i;
+      pc_write_val_comb = trap_vector_base_i;
+    end else if (set_pc_commit_i) begin
+      pc_write_en_comb = 1'b1;
+      pc_thread_id_comb = pc_commit_thread_id_i;
+      pc_write_val_comb = pc_commit_i + (halt_i ? '0 : {{CVA6Cfg.VLEN - 3{1'b0}}, 3'b100});
     end
-    // 2. Replay instruction fetch
-    if (replay) begin
-      npc_d = replay_addr;
+    if (CVA6Cfg.DebugEn && set_debug_pc_i) begin
+      pc_write_en_comb  = 1'b1;
+      pc_write_tid_comb = debug_thread_id_i;
+      pc_write_val_comb = CVA6Cfg.DmBaseAddress[CVA6Cfg.VLEN-1:0] + CVA6Cfg.HaltAddress[CVA6Cfg.VLEN-1:0];
     end
-    // 3. Control flow change request
-    if (is_mispredict) begin
-      npc_d = resolved_branch_i.target_address;
-    end
-    // 4. Return from environment call
-    if (eret_i) begin
-      npc_d = epc_i;
-    end
-    // 5. Exception/Interrupt
-    if (ex_valid_i) begin
-      npc_d = trap_vector_base_i;
-    end
-    // 6. Pipeline Flush because of CSR side effects
-    // On a pipeline flush start fetching from the next address
-    // of the instruction in the commit stage
-    // we either came here from a flush request of a CSR instruction or AMO,
-    // so as CSR or AMO instructions do not exist in a compressed form
-    // we can unconditionally do PC + 4 here
-    // or if the commit stage is halted, just take the current pc of the
-    // instruction in the commit stage
-    // TODO(zarubaf) This adder can at least be merged with the one in the csr_regfile stage
-    if (set_pc_commit_i) begin
-      npc_d = pc_commit_i + (halt_i ? '0 : {{CVA6Cfg.VLEN - 3{1'b0}}, 3'b100});
-    end
-    // 7. Debug
-    // enter debug on a hard-coded base-address
-    if (CVA6Cfg.DebugEn && set_debug_pc_i)
-      npc_d = CVA6Cfg.DmBaseAddress[CVA6Cfg.VLEN-1:0] + CVA6Cfg.HaltAddress[CVA6Cfg.VLEN-1:0];
-    //icache_dreq_o.vaddr = fetch_address;
-    icache_dreq_o.vaddr = thread_pc;
-  end
+  end : npc_multithreaded
 
   logic [CVA6Cfg.FETCH_WIDTH-1:0] icache_data;
   // re-align the cache line
