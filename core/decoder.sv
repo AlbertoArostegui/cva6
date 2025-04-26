@@ -32,6 +32,7 @@ module decoder
 ) (
     // Debug (async) request - SUBSYSTEM
     input logic debug_req_i,
+    input logic [$clog2(CVA6Cfg.NUM_THREADS)-1:0] thread_id_i,
     // PC from fetch stage - FRONTEND
     input logic [CVA6Cfg.VLEN-1:0] pc_i,
     // Is a compressed instruction - compressed_decoder
@@ -167,6 +168,7 @@ module decoder
     illegal_instr_bm                       = 1'b0;
     illegal_instr_zic                      = 1'b0;
     virtual_illegal_instr                  = 1'b0;
+    instruction_o.thread_id                = thread_id_i;
     instruction_o.pc                       = pc_i;
     instruction_o.trans_id                 = '0;
     instruction_o.fu                       = NONE;

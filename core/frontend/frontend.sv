@@ -145,6 +145,7 @@ module frontend
   bht_prediction_t [CVA6Cfg.INSTR_PER_FETCH-1:0]                   bht_prediction_shifted;
   btb_prediction_t [CVA6Cfg.INSTR_PER_FETCH-1:0]                   btb_prediction_shifted;
   ras_t                                                            ras_predict;
+  ras_t            [            NUM_THREADS-1:0]                   ras_predict_all;
   logic            [           CVA6Cfg.VLEN-1:0]                   vpc_btb;
   logic            [           CVA6Cfg.VLEN-1:0]                   vpc_bht;
 
@@ -314,7 +315,7 @@ module frontend
 
 
   // Cache interface
-  assign icache_dreq_o.req = instr_queue_ready;
+  assign icache_dreq_o.req = instr_queue_ready && !icache_stall_pending_q;
   assign if_ready = icache_dreq_i.ready & instr_queue_ready;
   // We need to flush the cache pipeline if:
   // 1. We mispredicted
@@ -345,6 +346,7 @@ module frontend
   assign btb_update.pc = resolved_branch_i.pc;
   assign btb_update.target_address = resolved_branch_i.target_address;
 
+  // THREADING
   // thread scheduling
   logic [CVA6Cfg.VLEN-1:0] thread_pc;
   logic [$clog(CVA6Cfg.NUM_THREADS)-1:0] current_thread_id_d, current_thread_id_q;
@@ -354,6 +356,18 @@ module frontend
   logic pc_write_en_comb;
   logic [CVA6Cfg.VLEN-1:0] pc_write_val_comb;
   logic [$clog(CVA6Cfg.NUM_THREADS)-1:0] pc_thread_id_comb;
+
+  // thread stalling on icache miss
+  // Track single outstanding icache miss
+  logic icache_stall_pending_d, icache_stall_pending_q;
+  logic [$clog(CVA6Cfg.NUM_THREADS)-1:0] stalled_thread_id_d, stalled_thread_id_q;
+
+  // drive thread_context status updates
+  logic status_update_req_comb;
+  logic [$clog(CVA6Cfg.NUM_THREADS)-1:0] status_update_thread_id_comb;
+  thread_status_t status_udpate_val_comb;
+
+
 
   thread_context #(
     .CVA6Cfg(CVA6Cfg),
@@ -368,10 +382,10 @@ module frontend
     .pc_write_i(pc_write_en_comb),
     .pc_write_value_i(pc_write_val_comb),
 
-    .thread_status_update_i(),
-    .thread_status_update_id_i(),
-    .thread_status_value_i(),
-    .all_threads_status,
+    .thread_status_update_i(status_update_req_comb),
+    .thread_status_update_id_i(status_update_thread_id_comb),
+    .thread_status_value_i(status_update_val_comb),
+    .all_threads_status(all_threads_status),
     .boot_addr_i(boot_addr_i)
   );
 
@@ -384,7 +398,7 @@ module frontend
       for (int i = 1; i < NUM_THREADS; i++) begin
         candidate_thread_id = (current_thread_id_q + i) % NUM_THREADS;
 
-        if (all_threads_status[candidate_thread_id] == ready) begin
+        if (all_threads_status[candidate_thread_id] == READY) begin
           current_thread_id_d = candidate_thread_id;
           found_ready = 1'b1;
           break;
@@ -394,6 +408,7 @@ module frontend
   end
 
   assign fetch_entry_o.thread_id = current_thread_id_q;
+  assign icache_dreq_o.vaddr = thread_pc;
 
   // -------------------
   // Next PC
@@ -461,10 +476,53 @@ module frontend
   // re-align the cache line
   assign icache_data = icache_dreq_i.data >> {shamt, 4'b0};
 
+  always_comb begin : status_udpate_logic
+    status_update_req_comb = 1'b0;
+    status_update_thread_id_comb = 'x;
+    status_udpate_val_comb = READY;
+
+    icache_stall_pending_d = icache_stall_pending_q;
+    stalled_thread_id_d = stalled_thread_id_q;
+
+    logic wants_to_fetch_for_current = instr_queue_ready;
+    logic cache_accepting_req = icache_dreq_i.ready;
+    logic current_thread_is_ready = (all_threads_status[current_thread_id_q] == READY);
+
+    // stalling
+    if (wants_to_fetch_for_current && !cache_accepting_req &&
+      current_thread_is_ready && !icache_stall_pending_q) begin
+      status_update_req_comb = 1'b1;
+      status_update_thread_id_comb = current_thread_id_q;
+      status_update_val_comb = STALLED_ICACHE;
+
+      icache_stall_pending_d = 1'b1;
+      stalled_thread_id_d = current_thread_id_q;
+    end
+
+    // un-stalling
+    if (icache_stall_pending_q && icache_dreq_i.ready) begin
+      if (all_threads_status[stalled_thread_id_q] == STALLED_ICACHE) begin
+        if (icache_dreq_i.ex.valid) begin
+          // If there is an exception, we do not set to ready
+          status_update_req_comb = 1'b0;
+        end else begin
+          status_update_req_comb = 1'b1;
+          status_update_thread_id_comb = stalled_thread_id_q;
+          status_update_val_comb = READY;
+        end
+      end
+      icache_stall_pending_d = 1'b0;
+    end
+
+    if (flush_i) begin
+      icache_stall_pending_d = 1'b0;
+
+    end
+
+  end : status_update_logic
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      npc_rst_load_q    <= 1'b1;
-      npc_q             <= '0;
       speculative_q     <= '0;
       icache_data_q     <= '0;
       icache_valid_q    <= 1'b0;
@@ -476,12 +534,17 @@ module frontend
       btb_q             <= '0;
       bht_q             <= '0;
       current_thread_id_q  <= '0;
+      icache_stall_pending_q <= '0;
+      stalled_thread_id_q <= '0;
+
     end else begin
-      npc_rst_load_q <= 1'b0;
-      npc_q          <= npc_d;
       speculative_q  <= speculative_d;
       icache_valid_q <= icache_dreq_i.valid;
+
       current_thread_id_q <= current_thread_id_d;
+      icache_stall_pending_q <= icache_stall_pending_d;
+      stalled_thread_id_q <= stalled_thread_id_d;
+
       if (icache_dreq_i.valid) begin
         icache_data_q  <= icache_data;
         icache_vaddr_q <= icache_dreq_i.vaddr;
@@ -512,23 +575,28 @@ module frontend
     end
   end
 
-  if (CVA6Cfg.RASDepth == 0) begin
+  if (CVA6Cfg.RASDepth == 0) begin : gen_no_ras
     assign ras_predict = '0;
-  end else begin : ras_gen
-    ras #(
-        .CVA6Cfg(CVA6Cfg),
-        .ras_t  (ras_t),
-        .DEPTH  (CVA6Cfg.RASDepth)
-    ) i_ras (
-        .clk_i,
-        .rst_ni,
-        .flush_bp_i(flush_bp_i),
-        .push_i(ras_push),
-        .pop_i(ras_pop),
-        .data_i(ras_update),
-        .data_o(ras_predict)
-    );
-  end
+  end else begin : gen_ras_array
+    for (genvar thread_id = 0; thread_id < NUM_THREADS; thread_id++) begin : gen_ras_instance
+      ras #(
+          .CVA6Cfg(CVA6Cfg),
+          .ras_t  (ras_t),
+          .DEPTH  (CVA6Cfg.RASDepth)
+      ) i_ras (
+          .clk_i,
+          .rst_ni,
+          .flush_bp_i(flush_bp_i),
+          .push_i(ras_push && (current_thread_id_q == thread_id)),
+          .pop_i(ras_pop && (current_thread_id_q == thread_id)),
+          .data_i(ras_update),
+          .data_o(ras_predict_all[thread_id])
+      );
+    end : gen_ras_instance
+  end : gen_ras_array
+
+  if (CVA6Cfg.RASDepth > 0)
+    assign ras_predcit = ras_predict_all[current_thread_id_q];
 
   //For FPGA, BTB is implemented in read synchronous BRAM
   //while for ASIC, BTB is implemented in D flip-flop

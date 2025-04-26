@@ -58,6 +58,8 @@ module load_store_unit
     output logic load_valid_o,
     // Load exception - ISSUE_STAGE
     output exception_t load_exception_o,
+    // Load thread_id ID - ISSUE_STAGE
+    output logic [CVA6Cfg.NUM_THREADS-1:0] load_thread_id_o,
 
     // Store transaction ID - ISSUE_STAGE
     output logic [CVA6Cfg.TRANS_ID_BITS-1:0] store_trans_id_o,
@@ -67,7 +69,8 @@ module load_store_unit
     output logic store_valid_o,
     // Store exception - ISSUE_STAGE
     output exception_t store_exception_o,
-
+    // Store thread_id - ISSUE_STAGE
+    output logic [CVA6Cfg.NUM_THREADS-1:0] store_thread_id_o,
     // Commit the first pending store - TO_BE_COMPLETED
     input logic commit_i,
     // Commit queue is ready to accept another commit request - TO_BE_COMPLETED
@@ -225,9 +228,12 @@ module load_store_unit
   logic                             ld_valid;
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] ld_trans_id;
   logic [         CVA6Cfg.XLEN-1:0] ld_result;
+  logic [   CVA6Cfg.NUM_THREADS-1:0] ld_thread_id;
+
   logic                             st_valid;
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] st_trans_id;
   logic [         CVA6Cfg.XLEN-1:0] st_result;
+  logic [   CVA6Cfg.NUM_THREADS-1:0] st_thread_id;
 
   logic [                     11:0] page_offset;
   logic                             page_offset_matches;
@@ -525,6 +531,7 @@ module load_store_unit
       .trans_id_o           (st_trans_id),
       .result_o             (st_result),
       .ex_o                 (st_ex),
+      .thread_id_o          (st_thread_id),
       // MMU port
       .translation_req_o    (cva6_st_translation_req),
       .vaddr_o              (st_vaddr),
@@ -566,6 +573,7 @@ module load_store_unit
       .valid_o              (ld_valid),
       .trans_id_o           (ld_trans_id),
       .result_o             (ld_result),
+      .thread_id_o          (ld_thread_id),
       .ex_o                 (ld_ex),
       // MMU port
       .translation_req_o    (ld_translation_req),
@@ -596,23 +604,23 @@ module load_store_unit
   // can be tuned to trade-off IPC vs. cycle time
 
   shift_reg #(
-      .dtype(logic [$bits(ld_valid) + $bits(ld_trans_id) + $bits(ld_result) + $bits(ld_ex) - 1:0]),
+      .dtype(logic [$bits(ld_valid) + $bits(ld_trans_id) + $bits(ld_result) + $bits(ld_ex) + $bits(ld_thread_id) - 1:0]),
       .Depth(CVA6Cfg.NrLoadPipeRegs)
   ) i_pipe_reg_load (
       .clk_i,
       .rst_ni,
-      .d_i({ld_valid, ld_trans_id, ld_result, ld_ex}),
-      .d_o({load_valid_o, load_trans_id_o, load_result_o, load_exception_o})
+      .d_i({ld_valid, ld_trans_id, ld_result, ld_ex, ld_thread_id}),
+      .d_o({load_valid_o, load_trans_id_o, load_result_o, load_exception_o, load_thread_id_o})
   );
 
   shift_reg #(
-      .dtype(logic [$bits(st_valid) + $bits(st_trans_id) + $bits(st_result) + $bits(st_ex) - 1:0]),
+      .dtype(logic [$bits(st_valid) + $bits(st_trans_id) + $bits(st_result) + $bits(st_ex) + $bits(st_thread_id) - 1:0]),
       .Depth(CVA6Cfg.NrStorePipeRegs)
   ) i_pipe_reg_store (
       .clk_i,
       .rst_ni,
-      .d_i({st_valid, st_trans_id, st_result, st_ex}),
-      .d_o({store_valid_o, store_trans_id_o, store_result_o, store_exception_o})
+      .d_i({st_valid, st_trans_id, st_result, st_ex, st_thread_id}),
+      .d_o({store_valid_o, store_trans_id_o, store_result_o, store_exception_o, store_thread_id_o})
   );
 
   // determine whether this is a load or store
@@ -841,6 +849,7 @@ module load_store_unit
   lsu_ctrl_t lsu_req_i;
 
   assign lsu_req_i = {
+    fu_data_i.thread_id,
     lsu_valid_i,
     vaddr_i,
     tinst_i,

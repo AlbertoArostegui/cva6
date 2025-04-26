@@ -43,6 +43,8 @@ module load_unit
     output logic valid_o,
     // Load transaction ID - ISSUE_STAGE
     output logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id_o,
+    // Thread identifier ID - ISSUE_STAGE
+    output logic [$clog2(CVA6Cfg.NUM_THREADS)-1:0] thread_id_o,
     // Load result - ISSUE_STAGE
     output logic [CVA6Cfg.XLEN-1:0] result_o,
     // Load exception - ISSUE_STAGE
@@ -96,9 +98,10 @@ module load_unit
   // in order to decouple the response interface from the request interface,
   // we need a a buffer which can hold all inflight memory load requests
   typedef struct packed {
-    logic [CVA6Cfg.TRANS_ID_BITS-1:0]    trans_id;        // scoreboard identifier
-    logic [CVA6Cfg.XLEN_ALIGN_BYTES-1:0] address_offset;  // least significant bits of the address
-    fu_op                                operation;       // type of load
+    logic [$clog(CVA6Cfg.NUM_THREADS)-1:0] thread_id;
+    logic [CVA6Cfg.TRANS_ID_BITS-1:0]      trans_id;        // scoreboard identifier
+    logic [CVA6Cfg.XLEN_ALIGN_BYTES-1:0]   address_offset;  // least significant bits of the address
+    fu_op                                  operation;       // type of load
   } ldbuf_t;
 
 
@@ -198,7 +201,10 @@ module load_unit
   assign req_port_o.data_wdata = '0;
   // compose the load buffer write data, control is handled in the FSM
   assign ldbuf_wdata = {
-    lsu_ctrl_i.trans_id, lsu_ctrl_i.vaddr[CVA6Cfg.XLEN_ALIGN_BYTES-1:0], lsu_ctrl_i.operation
+    lsu_ctrl_i.thread_id,
+    lsu_ctrl_i.trans_id,
+    lsu_ctrl_i.vaddr[CVA6Cfg.XLEN_ALIGN_BYTES-1:0],
+    lsu_ctrl_i.operation
   };
   // output address
   // we can now output the lower 12 bit as the index to the cache
@@ -424,21 +430,25 @@ module load_unit
   // decoupled rvalid process
   always_comb begin : rvalid_output
     //  read the pending load buffer
-    ldbuf_r    = req_port_i.data_rvalid;
-    trans_id_o = ldbuf_q[ldbuf_rindex].trans_id;
-    valid_o    = 1'b0;
-    ex_o.valid = 1'b0;
+    ldbuf_r      = req_port_i.data_rvalid;
+    thread_id_o  = 'x;
+    trans_id_o   = ldbuf_q[ldbuf_rindex].trans_id;
+    valid_o      = 1'b0;
+    ex_o.valid   = 1'b0;
 
     // we got an rvalid and it's corresponding request was not flushed
     if (req_port_i.data_rvalid && !ldbuf_flushed_q[ldbuf_rindex]) begin
       // if the response corresponds to the last request, check that we are not killing it
-      if ((ldbuf_last_id_q != ldbuf_rindex) || !req_port_o.kill_req) valid_o = 1'b1;
+      if ((ldbuf_last_id_q != ldbuf_rindex) || !req_port_o.kill_req)
+        valid_o = 1'b1;
+        thread_id_o  = ldbuf_rdata.thread_id;
       // the output is also valid if we got an exception. An exception arrives one cycle after
       // dtlb_hit_i is asserted, i.e. when we are in SEND_TAG. Otherwise, the exception
       // corresponds to the next request that is already being translated (see below).
       if (ex_i.valid && (state_q == SEND_TAG)) begin
-        valid_o    = 1'b1;
-        ex_o.valid = 1'b1;
+        valid_o      = 1'b1;
+        ex_o.valid   = 1'b1;
+        thread_id_o  = ldbuf_rdata.thread_id;
       end
     end
 
@@ -450,6 +460,7 @@ module load_unit
       trans_id_o = lsu_ctrl_i.trans_id;
       valid_o = 1'b1;
       ex_o.valid = 1'b1;
+      thread_id_o = lsu_ctrl_i.thread_id;
     end
   end
 
