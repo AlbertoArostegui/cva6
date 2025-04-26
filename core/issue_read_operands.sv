@@ -634,6 +634,7 @@ module issue_read_operands
       fu_data_n[i].trans_id  = issue_instr_i[i].trans_id;
       fu_data_n[i].fu        = issue_instr_i[i].fu;
       fu_data_n[i].operation = issue_instr_i[i].op;
+      fu_data_n[i].thread_id = issue_instr_i[i].thread_id;
       if (CVA6Cfg.RVH) begin
         tinst_n[i] = issue_instr_i[i].ex.tinst;
       end
@@ -828,7 +829,7 @@ module issue_read_operands
   logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.XLEN-1:0] wdata_pack;
   logic [CVA6Cfg.NrCommitPorts-1:0]                   we_pack;
 
-  //adjust address to read from register file (when synchronous RAM is used reads take one cycle, so we advance the address)   
+  //adjust address to read from register file (when synchronous RAM is used reads take one cycle, so we advance the address)
   for (genvar i = 0; i <= CVA6Cfg.NrIssuePorts - 1; i++) begin
     assign raddr_pack[i*OPERANDS_PER_INSTR+0] = CVA6Cfg.FpgaEn && CVA6Cfg.FpgaAlteraEn ? issue_instr_i_prev[i].rs1[4:0] : issue_instr_i[i].rs1[4:0];
     assign raddr_pack[i*OPERANDS_PER_INSTR+1] = CVA6Cfg.FpgaEn && CVA6Cfg.FpgaAlteraEn ? issue_instr_i_prev[i].rs2[4:0] : issue_instr_i[i].rs2[4:0];

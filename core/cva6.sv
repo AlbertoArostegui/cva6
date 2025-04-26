@@ -31,6 +31,8 @@ module cva6
       rvfi_probes_instr_t instr;
     },
 
+    localparam int unsigned THREAD_ID_WIDTH = $clog2(CVA6Cfg.NUM_THREADS);
+
     // branchpredict scoreboard entry
     // this is the struct which we will inject into the pipeline to guide the various
     // units towards the correct branch decision and resolve
@@ -81,7 +83,7 @@ module cva6
     // IF/ID Stage
     // store the decompressed instruction
     localparam type fetch_entry_t = struct packed {
-      logic [$clog2(CVA6Cfg.NUM_THREADS)-1:0] thread_id;
+      logic [THREAD_ID_WIDTH-1:0] thread_id;
       logic [CVA6Cfg.VLEN-1:0] address;  // the address of the instructions from below
       logic [31:0] instruction;  // instruction word
       branchpredict_sbe_t     branch_predict; // this field contains branch prediction information regarding the forward branch path
@@ -95,6 +97,7 @@ module cva6
 
     // ID/EX/WB Stage
     localparam type scoreboard_entry_t = struct packed {
+      logic [THREAD_ID_WIDTH-1:0] thread_id,
       logic [CVA6Cfg.VLEN-1:0] pc;  // PC of instruction
       logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id;      // this can potentially be simplified, we could index the scoreboard entry
       // with the transaction id in any case make the width more generic
@@ -122,9 +125,11 @@ module cva6
       logic is_zcmt;  //is a zcmt instruction
     },
     localparam type writeback_t = struct packed {
+      logic [THREAD_ID_WIDTH-1:0] thread_id;
       logic valid;  // wb data is valid
       logic [CVA6Cfg.XLEN-1:0] data;  //wb data
       logic ex_valid;  // exception from WB
+      exception_t ex;
       logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id;  //transaction ID
     },
 
@@ -133,13 +138,13 @@ module cva6
     // all the necessary data structures
     // bp_resolve_t
     localparam type bp_resolve_t = struct packed {
-      logic                    valid;           // prediction with all its values is valid
-      logic [CVA6Cfg.VLEN-1:0] pc;              // PC of predict or mis-predict
-      logic [CVA6Cfg.VLEN-1:0] target_address;  // target address at which to jump, or not
-      logic                    is_mispredict;   // set if this was a mis-predict
-      logic                    is_taken;        // branch is taken
-      cf_t                     cf_type;         // Type of control flow change
-      logic [$clog2(CVA6.Cfg.NUM_THREADS)-1:0] thread_id;
+      logic [THREAD_ID_WIDTH-1:0] thread_id;
+      logic                       valid;           // prediction with all its values is valid
+      logic [CVA6Cfg.VLEN-1:0]    pc;              // PC of predict or mis-predict
+      logic [CVA6Cfg.VLEN-1:0]    target_address;  // target address at which to jump, or not
+      logic                       is_mispredict;   // set if this was a mis-predict
+      logic                       is_taken;        // branch is taken
+      cf_t                        cf_type;         // Type of control flow change
     },
 
     // All information needed to determine whether we need to associate an interrupt
@@ -154,6 +159,7 @@ module cva6
     },
 
     localparam type lsu_ctrl_t = struct packed {
+      logic [THREAD_ID_WIDTH-1:0]       thread_id;
       logic                             valid;
       logic [CVA6Cfg.VLEN-1:0]          vaddr;
       logic [31:0]                      tinst;
@@ -169,6 +175,7 @@ module cva6
     },
 
     localparam type fu_data_t = struct packed {
+      logic [THREAD_ID_WIDTH-1:0]       thread_id;
       fu_t                              fu;
       fu_op                             operation;
       logic [CVA6Cfg.XLEN-1:0]          operand_a;
